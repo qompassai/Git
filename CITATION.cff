@@ -1,20 +1,19 @@
 cff-version: 1.2.0
+title: "Git"
 message: "If you use this software, please cite it as below."
-title: "Qompass AI Git"
 authors:
   - family-names: "Porter"
     given-names: "Matthew A."
     orcid: "https://orcid.org/0000-0002-0302-4812"
     affiliation: "Qompass AI"
-version: "1.0.0"
-date-released: "2025-04-08"
-url: "https://github.com/qompassai/git"
-repository-code: "https://github.com/qompassai/git"
-license: "AGPL-3.0 & QCDA-1.0"
+version: "2025-04-28"
+date-released: "2025-04-28"
+repository-code: "https://github.com/qompassai/Git"
+license: "AGPL-3.0 AND Qompass-Commercial-Data-Agreement"
 keywords:
   - AI
-  - Git
-  - education
-  - healthcare
-abstract: Educational Content on Git."
-
+  - Quantum
+  - Post-Quantum Cryptography
+  - Education
+  - Healthcare
+abstract: "Equator Git: Educational Content on Git"
