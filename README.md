@@ -2,11 +2,13 @@
 <!-- ---------------------------- -->
 <!-- Copyright (C) 2025 Qompass AI, All rights reserved -->
 
-<h2> The Onion Router (aka "Tor") </h2>
+<h2> Git: For Version Management </h2>
 
-<h3> Qompass AI on Tor </h3>
+<h3> Qompass AI on Git </h3>
 
-![Repository Views](https://komarev.com/ghpvc/?username=qompassai-git)
+![Repository Views](https://komarev.com/ghpvc/?username=qompassai-Git)
+![GitHub all releases](https://img.shields.io/github/downloads/qompassai/Git/total?style=flat-square)
+
   <a href="https://git-scm.com/">
   <img src="https://img.shields.io/badge/Git-F05032?style=for-the-badge&logo=git&logoColor=white" alt="Git">
 </a>
