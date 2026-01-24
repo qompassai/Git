@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# ghii
+# Qompass AI - [ ]
+# Copyright (C) 2026 Qompass AI, All rights reserved
+# ----------------------------------------
+set -euo pipefail
+usage()
+{
+  cat << 'EOF'
+Usage:
+  ghii issues [--search <keyword>]        # generate open-issues-YYYY-MM-DD[-keyword].md
+  ghii pr-template <issue-number>         # generate ISSUE/ISSUE-pr.md in GHII_ROOT (or $PWD)
+
+Env:
+  GHII_REPO  Override GitHub repo
+  GHII_ROOT  Override local root dir for per-issue dirs
+EOF
+  exit 1
+}
+cmd="${1:-issues}"
+shift || true
+DEFAULT_REPO="$(gh repo view --json nameWithOwner -q '.nameWithOwner')"
+REPO="${GHII_REPO:-$DEFAULT_REPO}"
+DATE="$(date +%Y-%m-%d)"
+case "$cmd" in
+  issues)
+    SEARCH=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --search | -s)
+          SEARCH="${2:-}"
+          shift 2 || true
+          ;;
+        *)
+          usage
+          ;;
+      esac
+    done
+    SAFE_SEARCH=""
+    if [[ -n $SEARCH ]]; then
+      SAFE_SEARCH="$(printf '%s' "$SEARCH" | tr '[:upper:] ' '[:lower:]_' | tr -cd '[:alnum:]_-')"
+    fi
+    base_name="$(basename "${REPO}")-open-issues-${DATE}"
+    if [[ -n $SAFE_SEARCH ]]; then
+      OUTFILE="${base_name}-${SAFE_SEARCH}.md"
+    else
+      OUTFILE="${base_name}.md"
+    fi
+    if [[ -n $SEARCH ]]; then
+      gh issue list \
+        --repo "${REPO}" \
+        --state open \
+        --limit 600 \
+        --search "$SEARCH" \
+        --json number,title,state,labels,url,createdAt,comments,body \
+        --jq 'sort_by(.createdAt) | reverse' > /tmp/gh-issues.json
+    else
+      gh issue list \
+        --repo "${REPO}" \
+        --state open \
+        --limit 600 \
+        --json number,title,state,labels,url,createdAt,comments,body \
+        --jq 'sort_by(.createdAt) | reverse' > /tmp/gh-issues.json
+    fi
+    {
+      printf '# Open issues for %s\n\n' "${REPO}"
+      if [[ -n $SEARCH ]]; then
+        printf "_Filtered by search keyword: \`%s\`_\n\n" "$SEARCH"
+      fi
+      printf '## Summary (newest first)\n\n'
+      printf '| # | Title | Opened | Comments | Labels | Link |\n'
+      printf '|---|-------|--------|----------|--------|------|\n'
+      jq -r '
+        .[]
+        | "| #\(.number) | \(.title) | \(.createdAt) | \((.comments // [] | length)) | \((.labels // [] | map(.name) | join(", "))) | [link](\(.url)) |"
+      ' /tmp/gh-issues.json
+      printf '\n\n## Full issue details (newest first)\n\n'
+      jq -r '
+        .[]
+        | "### Issue #\(.number): \(.title)\n\n"
+          + "- Opened: \(.createdAt)\n"
+          + "- Comments: \((.comments // [] | length))\n"
+          + "- Labels: \((.labels // [] | map(.name) | join(", ")))\n"
+          + "- Link: \(.url)\n\n"
+          + (
+              (if .body == null or .body == "" then "(no description)" else .body end)
+              | split("\n") | .[0:5] | join("\n")
+            )
+          + "\n"
+      ' /tmp/gh-issues.json
+    } > "${OUTFILE}"
+    printf 'Wrote %s\n' "${OUTFILE}"
+    ;;
+  pr-template)
+    ISSUE_NUMBER="${1:-}"
+    if [[ -z $ISSUE_NUMBER ]]; then
+      printf '%s\n' "Error: pr-template requires an <issue-number> argument." >&2
+      usage
+    fi
+    ISSUE_JSON="$(gh issue view "$ISSUE_NUMBER" --repo "${REPO}" \
+      --json number,title,body,url,labels,createdAt,author \
+      --jq '.')"
+    if [[ -z $ISSUE_JSON || $ISSUE_JSON == "null" ]]; then
+      printf 'Error: issue #%s not found in %s.\n' "${ISSUE_NUMBER}" "${REPO}" >&2
+      exit 1
+    fi
+    TITLE="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.title')"
+    URL="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.url')"
+    BODY_SNIPPET="$(
+      printf '%s\n' "$ISSUE_JSON" | jq -r '
+        (if .body == null or .body == "" then "(no description)" else .body end)
+        | split("\n") | .[0:10] | join("\n")
+      '
+    )"
+    LABELS="$(printf '%s\n' "$ISSUE_JSON" | jq -r '(.labels // [] | map(.name) | join(", "))')"
+
+    ISSUE_AUTHOR_LOGIN="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.author.login')"
+    ISSUE_AUTHOR_URL="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.author.url')"
+    ARCH_REPO_ROOT="${GHII_ROOT:-$PWD}"
+    ISSUE_DIR="${ARCH_REPO_ROOT}/${ISSUE_NUMBER}"
+    mkdir -p "${ISSUE_DIR}"
+    TEMPLATE_FILE="${ISSUE_DIR}/${ISSUE_NUMBER}-pr.md"
+    TEMPLATE_FILE="${ISSUE_DIR}/${ISSUE_NUMBER}-pr.md"
+    {
+      printf 'Issue author: @%s (%s)\n' "$ISSUE_AUTHOR_LOGIN" "$ISSUE_AUTHOR_URL"
+      printf 'PR plan author: @%s\n\n' "${GITHUB_USER:-phaedrusflow}"
+      printf '# WIP PR plan for #%s – %s\n\n' "$ISSUE_NUMBER" "$TITLE"
+      printf 'Labels: %s\n' "${LABELS:-none}"
+      printf 'Repo: %s\n' "$REPO"
+      printf 'Upstream issue: %s\n\n' "$URL"
+      printf '## Summary\n\n'
+      printf '_Replace this section with a concise summary of the fix._\n\n'
+      printf '## Upstream issue context (snippet)\n\n'
+      printf '```text\n'
+      printf '%s\n' "$BODY_SNIPPET"
+      printf '```\n\n'
+      printf "## Implementation plan\n\n"
+      printf "* [ ] Add tests / verification steps\n"
+      printf "* [ ] Identify relevant scripts/configs for this issue\n"
+      printf '* `./%s/install/...`\n' "$ISSUE_NUMBER"
+      printf "* [ ] Port final changes into fork branch\n"
+      printf '* [ ] Prototype changes under `./%s`\n\n' "$ISSUE_NUMBER"
+
+      printf '## Files in this issue dir\n\n'
+      printf '_Add or link planned files here, for example:_\n\n'
+      printf '* `./%s/config/...`\n\n' "$ISSUE_NUMBER"
+
+      printf '## Linked issues\n\n'
+      printf '* %s#%s\n\n' "$REPO" "$ISSUE_NUMBER"
+      # or leave as a template line instead:
+      # printf '* <owner>/<repo>#<issue-number>\n\n'
+
+      printf '## PR checklist\n\n'
+      printf '%s\n' '- [ ] Ensure changes build and pass basic tests'
+      printf '%s\n' "- [ ] Link this PR to ${REPO}#${ISSUE_NUMBER}"
+      printf '%s\n' '- [ ] Reference design notes in this repo (tracker.md, issue dir)'
+      printf '%s\n' '- [ ] Include concise, user-facing description in PR body'
+
+      printf '\n## Testing\n\n'
+      printf '* [ ] Integration / E2E tests run\n'
+      printf '* [ ] Manual verification steps documented\n'
+      printf '* [ ] Unit tests updated\n\n'
+
+      printf '## Risks / Rollback\n\n'
+      printf '* Describe how to roll back safely.\n'
+      printf '* Describe potential impact if this change fails.\n'
+    } > "$TEMPLATE_FILE"
+    printf 'Wrote PR template: %s\n' "$TEMPLATE_FILE"
+    ;;
+  *)
+    usage
+    ;;
+esac
