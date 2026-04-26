@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# ghii
+# Qompass AI - [ ]
+# Copyright (C) 2026 Qompass AI, All rights reserved
+# ----------------------------------------
+set -euo pipefail
+
+usage()
+{
+  cat << 'EOF'
+Usage:
+  ghii issues [--search <keyword>]        # generate <repo>-open-issues-YYYY-MM-DD[-keyword].md
+  ghii pr-template <issue-number>         # generate ISSUE/ISSUE-pr.md in GHII_ROOT (or $PWD)
+
+Env:
+  GHII_REPO   Override GitHub repo (owner/name)
+  GHII_ROOT   Override local root dir for per-issue dirs
+  GITHUB_USER Default PR plan author (for pr-template), defaults to phaedrusflow
+EOF
+  exit 1
+}
+
+cmd="${1:-issues}"
+shift || true
+
+DEFAULT_REPO="$(gh repo view --json nameWithOwner -q '.nameWithOwner')"
+REPO="${GHII_REPO:-$DEFAULT_REPO}"
+DATE="$(date +%Y-%m-%d)"
+
+case "$cmd" in
+  issues)
+    SEARCH=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --search | -s)
+          SEARCH="${2:-}"
+          shift 2 || true
+          ;;
+        *)
+          usage
+          ;;
+      esac
+    done
+
+    SAFE_SEARCH=""
+    if [[ -n $SEARCH ]]; then
+      SAFE_SEARCH="$(printf '%s' "$SEARCH" \
+        | tr '[:upper:] ' '[:lower:]_' \
+        | tr -cd '[:alnum:]_-')"
+    fi
+
+    base_name="$(basename "${REPO}")-open-issues-${DATE}"
+    if [[ -n $SAFE_SEARCH ]]; then
+      OUTFILE="${base_name}-${SAFE_SEARCH}.md"
+    else
+      OUTFILE="${base_name}.md"
+    fi
+
+    if [[ -n $SEARCH ]]; then
+      gh issue list \
+        --repo "${REPO}" \
+        --state open \
+        --limit 600 \
+        --search "$SEARCH" \
+        --json number,title,state,labels,url,createdAt,comments,body \
+        --jq 'sort_by(.createdAt) | reverse' > /tmp/gh-issues.json
+    else
+      gh issue list \
+        --repo "${REPO}" \
+        --state open \
+        --limit 600 \
+        --json number,title,state,labels,url,createdAt,comments,body \
+        --jq 'sort_by(.createdAt) | reverse' > /tmp/gh-issues.json
+    fi
+
+    {
+      printf '# Open issues for %s\n\n' "${REPO}"
+      if [[ -n $SEARCH ]]; then
+        printf '_Filtered by search keyword: `%s`_\n\n' "$SEARCH"
+      fi
+
+      printf '## Summary (newest first)\n\n'
+      printf '| # | Title | Opened | Comments | Labels | Link |\n'
+      printf '|---|-------|--------|----------|--------|------|\n'
+      jq -r '
+        .[]
+        | "| #\(.number) | \(.title) | \(.createdAt) | \((.comments // [] | length)) | \((.labels // [] | map(.name) | join(", "))) | [link](\(.url)) |"
+      ' /tmp/gh-issues.json
+
+      printf '\n\n## Full issue details (newest first)\n\n'
+      jq -r '
+        .[]
+        | "### Issue #\(.number): \(.title)\n\n"
+          + "- Opened: \(.createdAt)\n"
+          + "- Comments: \((.comments // [] | length))\n"
+          + "- Labels: \((.labels // [] | map(.name) | join(", ")))\n"
+          + "- Link: \(.url)\n\n"
+          + (
+              (if .body == null or .body == "" then "(no description)" else .body end)
+              | split("\n") | .[0:5] | join("\n")
+            )
+          + "\n"
+      ' /tmp/gh-issues.json
+    } > "${OUTFILE}"
+
+    printf 'Wrote %s\n' "${OUTFILE}"
+    ;;
+
+  pr-template)
+    ISSUE_NUMBER="${1:-}"
+    if [[ -z $ISSUE_NUMBER ]]; then
+      printf '%s\n' "Error: pr-template requires an <issue-number> argument." >&2
+      usage
+    fi
+
+    ISSUE_JSON="$(
+      gh issue view "$ISSUE_NUMBER" --repo "${REPO}" \
+        --json number,title,body,url,labels,createdAt,author \
+        --jq '.'
+    )"
+
+    if [[ -z $ISSUE_JSON || $ISSUE_JSON == "null" ]]; then
+      printf 'Error: issue #%s not found in %s.\n' "${ISSUE_NUMBER}" "${REPO}" >&2
+      exit 1
+    fi
+
+    TITLE="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.title')"
+    URL="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.url')"
+    BODY_SNIPPET="$(
+      printf '%s\n' "$ISSUE_JSON" | jq -r '
+        (if .body == null or .body == "" then "(no description)" else .body end)
+        | split("\n") | .[0:10] | join("\n")
+      '
+    )"
+    LABELS="$(printf '%s\n' "$ISSUE_JSON" | jq -r '(.labels // [] | map(.name) | join(", "))')"
+
+    ISSUE_AUTHOR_LOGIN="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.author.login')"
+    ISSUE_AUTHOR_URL="$(printf '%s\n' "$ISSUE_JSON" | jq -r '.author.url')"
+
+    ARCH_REPO_ROOT="${GHII_ROOT:-$PWD}"
+    ISSUE_DIR="${ARCH_REPO_ROOT}/${ISSUE_NUMBER}"
+    mkdir -p "${ISSUE_DIR}"
+
+    TEMPLATE_FILE="${ISSUE_DIR}/${ISSUE_NUMBER}-pr.md"
+
+    {
+      printf 'Issue author: @%s (%s)\n' "$ISSUE_AUTHOR_LOGIN" "$ISSUE_AUTHOR_URL"
+      printf 'PR plan author: @%s (https://github.com/%s)\n' "${GITHUB_USER:-phaedrusflow}" "${GITHUB_USER:-phaedrusflow}"
+      printf 'Organization: @qompassai (https://github.com/qompassai)\n'
+      printf 'Author IDs: [user-id: <your-user-id-here>] [org-id: <your-org-id-here>]\n\n'
+
+      printf '# WIP PR plan for #%s – %s\n\n' "$ISSUE_NUMBER" "$TITLE"
+      printf 'Labels: %s\n' "${LABELS:-none}"
+      printf 'Repo: %s\n' "$REPO"
+      printf 'Upstream issue: %s\n\n' "$URL"
+
+      # Legend
+      printf ' ---\n\n'
+      printf '## Legend\n\n'
+      printf '* **D#** – Diff / behavior change\n'
+      printf '* **F#** – File added/changed/removed\n'
+      printf '* **T#** – Test / verification step\n'
+      printf '* **R#** – Risk / rollback note\n'
+      printf '* **N#** – Notes / open questions\n\n'
+
+      # Summary
+      printf ' ---\n\n'
+      printf '## Summary\n\n'
+      printf '* D1: [short summary of primary behavior change]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n\n'
+
+      # Upstream issue snippet
+      printf '## Upstream issue context (snippet)\n\n'
+      printf '```text\n'
+      printf '%s\n' "$BODY_SNIPPET"
+      printf '```\n\n'
+
+      # Proposed Changes
+      printf '## Proposed Changes\n\n'
+      printf '* D2: [describe change #2]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n'
+      printf '* D3: [describe change #3]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n'
+      printf '* D4: [describe change #4]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n\n'
+
+      # Files (F#)
+      printf '## Files\n\n'
+      printf '* F1: [`./%s/default/hypr/envs.conf`](./%s/default/hypr/envs.conf)\n' "$ISSUE_NUMBER" "$ISSUE_NUMBER"
+      printf '  * Purpose: [what this file does in this PR]\n'
+      printf '  * Lines: [`envs.conf#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/%s/default/hypr/envs.conf#Lxx-Lyy>)\n' "$ISSUE_NUMBER"
+      printf '* F2: [`./%s/default/hypr/start.conf`](./%s/default/hypr/start.conf)\n' "$ISSUE_NUMBER" "$ISSUE_NUMBER"
+      printf '  * Purpose: [what this file does in this PR]\n'
+      printf '  * Lines: [`start.conf#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/%s/default/hypr/start.conf#Lxx-Lyy>)\n' "$ISSUE_NUMBER"
+      printf '* F3: [`./%s/install/...`](./%s/install/...)\n' "$ISSUE_NUMBER" "$ISSUE_NUMBER"
+      printf '  * Purpose: [install / helper scripts]\n'
+      printf '  * Lines: [`install#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/%s/install/<path>#Lxx-Lyy>)\n' "$ISSUE_NUMBER"
+      printf '* F4: [additional file]\n'
+      printf '  * Purpose: [what this file does]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n\n'
+
+      # Linked issues
+      printf '## Linked issues\n\n'
+      printf '* %s#%s\n\n' "$REPO" "$ISSUE_NUMBER"
+
+      # PR checklist
+      printf '## PR checklist\n\n'
+      printf '* [ ] D5: [build & basic tests pass]\n'
+      printf '* [ ] D6: [link this PR to %s#%s]\n' "$REPO" "$ISSUE_NUMBER"
+      printf '* [ ] D7: [reference design notes (tracker.md, issue dir)]\n'
+      printf '* [ ] D8: [user-facing PR description written]\n\n'
+
+      # Testing (T#)
+      printf '## Testing\n\n'
+      printf '* T1: [test description]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n'
+      printf '* T2: [test description]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n'
+      printf '* T3: [test description]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n'
+      printf '* T4: [test description]\n'
+      printf '  * Lines: [`<file>#Lxx-Lyy`](<https://github.com/<owner>/<repo>/blob/<sha>/<path>#Lxx-Lyy>)\n\n'
+
+      # Risks / Rollback (R#)
+      printf '## Risks / Rollback\n\n'
+      printf '* R1: [risk description]\n'
+      printf '  * Mitigation: [how to mitigate]\n'
+      printf '* R2: [risk description]\n'
+      printf '  * Mitigation: [how to mitigate]\n'
+      printf '* R3: [risk description]\n'
+      printf '  * Mitigation: [how to mitigate]\n'
+      printf '* R4: [risk description]\n'
+      printf '  * Mitigation: [how to mitigate]\n\n'
+
+      # Notes / Open questions (N#)
+      printf '## Notes / Open questions\n\n'
+      printf '* N1: [note or open question]\n'
+      printf '* N2: [note or open question]\n'
+      printf '* N3: [note or open question]\n'
+      printf '* N4: [note or open question]\n'
+    } > "$TEMPLATE_FILE"
+
+    printf 'Wrote PR template: %s\n' "$TEMPLATE_FILE"
+    ;;
+
+  *)
+    usage
+    ;;
+esac
